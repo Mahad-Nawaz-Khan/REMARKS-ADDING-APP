@@ -1,7 +1,9 @@
 import pandas as pd
 import random
 import math
+import os
 from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
 
@@ -10,11 +12,14 @@ app = FastAPI()
 # Allow frontend to communicate with backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000"],  # Only allow your frontend
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 def add_remarks_to_file(file_path):
     if file_path.endswith(".xlsx"):
@@ -54,7 +59,7 @@ def add_remarks_to_file(file_path):
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
-    file_path = f"uploads/{file.filename}"
+    file_path = os.path.join(UPLOAD_FOLDER, file.filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
@@ -62,7 +67,12 @@ async def upload_file(file: UploadFile = File(...)):
     if "Unsupported" in new_file or "File must" in new_file:
         return {"message": new_file}
     
-    return {"message": f"File processed and saved as {new_file}"}
+    return {"message": "File processed successfully!", "download_url": f"/download/{os.path.basename(new_file)}"}
+
+@app.get("/download/{filename}")
+async def download_file(filename: str):
+    file_path = os.path.join(UPLOAD_FOLDER, filename)
+    return FileResponse(file_path, filename=filename)
 
 # Run the server
 if __name__ == "__main__":
