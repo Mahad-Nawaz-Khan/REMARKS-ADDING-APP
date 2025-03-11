@@ -21,15 +21,15 @@ export default function Home() {
       setMessage("Please select a file first.");
       return;
     }
-  
+
     const formData = new FormData();
     formData.append("file", file);
-  
+
     try {
       const response = await axios.post(`${backendUrl}/upload`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-  
+
       setMessage(response.data.message);
       if (response.data.download_url) {
         setDownloadUrl(`${backendUrl}${response.data.download_url}`);
@@ -47,7 +47,13 @@ export default function Home() {
       </Head>
       <div className="bg-gray-800 p-6 rounded-lg shadow-lg text-center">
         <h1 className="text-2xl mb-4">Upload a CSV or Excel File</h1>
-        <input type="file" onChange={handleFileChange} className="mb-4 p-2 bg-gray-700 border border-gray-600 rounded" />
+        <input
+          type="file"
+          accept=".csv, .xlsx"
+          onChange={handleFileChange}
+          className="mb-4 p-2 bg-gray-700 border border-gray-600 rounded"
+        />
+
         <button
           onClick={handleUpload}
           className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded"

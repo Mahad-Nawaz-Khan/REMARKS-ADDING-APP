@@ -2,7 +2,8 @@ import pandas as pd
 import random
 import math
 import os
-from fastapi import FastAPI, File, UploadFile
+import tempfile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
@@ -12,16 +13,16 @@ app = FastAPI()
 # Allow frontend to communicate with backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Only allow your frontend
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+ALLOWED_EXTENSIONS = {".csv", ".xlsx"}
 
 def add_remarks_to_file(file_path):
+    """Adds remarks to the uploaded file and saves the modified version."""
     if file_path.endswith(".xlsx"):
         df = pd.read_excel(file_path)
     elif file_path.endswith(".csv"):
@@ -30,8 +31,8 @@ def add_remarks_to_file(file_path):
         return "Unsupported file format"
 
     row_count = len(df)
-    if row_count < 100:
-        return "File must have at least 100 rows"
+    if row_count < 1:
+        return "File must have at least 1 rows"
 
     # Generate remarks
     informed_count = math.ceil(row_count * 0.70)
@@ -49,6 +50,7 @@ def add_remarks_to_file(file_path):
     random.shuffle(remarks_distribution)
     df["REMARKS"] = remarks_distribution[:row_count]
 
+    # Save modified file in the temp directory
     new_file_path = file_path.replace(".xlsx", "_modified.xlsx").replace(".csv", "_modified.csv")
     if file_path.endswith(".xlsx"):
         df.to_excel(new_file_path, index=False)
@@ -59,20 +61,42 @@ def add_remarks_to_file(file_path):
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
-    file_path = os.path.join(UPLOAD_FOLDER, file.filename)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
+    """Handles file upload, processing, and provides a download link."""
+    filename = os.path.basename(file.filename)  # Sanitize filename
+
+    if not any(filename.endswith(ext) for ext in ALLOWED_EXTENSIONS):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only CSV and Excel allowed.")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=filename) as temp_file:
+        file_path = temp_file.name
+        shutil.copyfileobj(file.file, temp_file)
+
     new_file = add_remarks_to_file(file_path)
+
     if "Unsupported" in new_file or "File must" in new_file:
+        os.remove(file_path)  # Delete temp file if processing fails
         return {"message": new_file}
-    
+
     return {"message": "File processed successfully!", "download_url": f"/download/{os.path.basename(new_file)}"}
 
 @app.get("/download/{filename}")
 async def download_file(filename: str):
-    file_path = os.path.join(UPLOAD_FOLDER, filename)
-    return FileResponse(file_path, filename=filename)
+    """Allows the user to download the processed file and deletes it afterward."""
+    temp_dir = tempfile.gettempdir()
+    file_path = os.path.join(temp_dir, filename)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    response = FileResponse(file_path, filename=filename)
+
+    # Delete file after download
+    try:
+        os.remove(file_path)
+    except Exception as e:
+        print(f"Error deleting file {file_path}: {e}")
+
+    return response
 
 # Run the server
 if __name__ == "__main__":
