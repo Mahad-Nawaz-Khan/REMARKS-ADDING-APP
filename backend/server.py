@@ -4,10 +4,9 @@ import math
 import os
 import tempfile
 from fastapi import FastAPI, File, HTTPException, UploadFile, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
-import time
 import uuid
 
 app = FastAPI()
