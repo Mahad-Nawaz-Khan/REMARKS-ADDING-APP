@@ -17,6 +17,15 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000";
 
+useEffect(() => {
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js')
+      .then(() => console.log('✅ Service Worker Registered'))
+      .catch(err => console.log('Service Worker Failed:', err));
+  }
+}, []);
+
+
   // Reset success message after 5 seconds
   useEffect(() => {
     if (showSuccess) {
