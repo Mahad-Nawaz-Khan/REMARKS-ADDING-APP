@@ -109,8 +109,10 @@ async function cacheFirst(req, cacheName) {
 
   try {
     const res = await fetch(req);
-    caches.open(cacheName).then((cache) => cache.put(req, res.clone()));
-    return res;
+    const cacheClone = res.clone(); // clone immediately
+    const cache = await caches.open(cacheName);
+    await cache.put(req, cacheClone);
+    return res; // return original to page
   } catch {
     return caches.match("/");
   }
@@ -120,12 +122,15 @@ async function cacheFirst(req, cacheName) {
 async function networkFirstRuntimeCache(req) {
   try {
     const res = await fetch(req);
-    caches.open(RUNTIME_CACHE).then((cache) => cache.put(req, res.clone()));
+    const cacheClone = res.clone(); // clone immediately
+    const cache = await caches.open(RUNTIME_CACHE);
+    await cache.put(req, cacheClone);
     return res;
   } catch {
     return caches.match(req);
   }
 }
+
 
 // Detect static file extensions
 function isStaticAsset(pathname) {
