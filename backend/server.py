@@ -24,7 +24,7 @@ ALLOWED_EXTENSIONS = {".csv", ".xlsx"}
 # Store processed files with unique IDs
 PROCESSED_FILES = {}
 
-def add_remarks_to_file(file_path, file_id):
+def add_remarks_to_file(file_path, file_id, original_filename):
     """Adds remarks to the uploaded file and saves the modified version."""
     try:
         if file_path.endswith(".xlsx"):
@@ -57,8 +57,11 @@ def add_remarks_to_file(file_path, file_id):
         df["REMARKS"] = remarks_distribution[:row_count]
 
         # Save modified file in the temp directory
-        filename = os.path.basename(file_path)
-        new_file_path = file_path.replace(".xlsx", "_modified.xlsx").replace(".csv", "_modified.csv")
+        # Create a clean filename without temp file suffix
+        base_name, ext = os.path.splitext(original_filename)
+        clean_filename = f"{base_name}_modified{ext}"
+        new_file_path = os.path.join(tempfile.gettempdir(), clean_filename)
+        
         if file_path.endswith(".xlsx"):
             df.to_excel(new_file_path, index=False)
         else:
@@ -68,7 +71,7 @@ def add_remarks_to_file(file_path, file_id):
         PROCESSED_FILES[file_id] = {
             "status": "completed", 
             "file_path": new_file_path,
-            "filename": os.path.basename(new_file_path)
+            "filename": clean_filename
         }
     except Exception as e:
         PROCESSED_FILES[file_id] = {"status": "error", "message": f"Error processing file: {str(e)}"}
@@ -98,7 +101,7 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
 
     # Process the file in the background
     PROCESSED_FILES[file_id] = {"status": "processing"}
-    background_tasks.add_task(add_remarks_to_file, file_path, file_id)
+    background_tasks.add_task(add_remarks_to_file, file_path, file_id, filename)
 
     return {"message": "File uploaded and being processed", "file_id": file_id}
 
