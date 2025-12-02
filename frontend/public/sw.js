@@ -1,58 +1,137 @@
-const CACHE_NAME = 'addremarks-cache-v1';
-const PRECACHE_URLS = [
-  '/',
-  '/manifest.json'
+// 🚀 Auto-update immediately on new deploy
+self.skipWaiting();
+
+// 🔄 Version bump = full refresh for users
+const CACHE_VERSION = `v-${Date.now()}`;
+const SHELL_CACHE = `addremarks-shell-${CACHE_VERSION}`;
+const STATIC_CACHE = `addremarks-static-${CACHE_VERSION}`;
+const RUNTIME_CACHE = `addremarks-runtime-${CACHE_VERSION}`;
+
+// 🤲 App shell that must always load
+const CRITICAL_URLS = ["/", "/manifest.json"];
+
+// 🧊 Static assets that rarely change
+const STATIC_ASSETS = [
+  "/icons/icon-192x192.png",
+  "/icons/icon-512x512.png"
 ];
 
-// Install: pre-cache the shell (only safe, static urls)
-self.addEventListener('install', event => {
-  self.skipWaiting(); // activate this SW immediately on install
+// -----------------------------
+//  INSTALL — Precache App Shell
+// -----------------------------
+self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => {
-      // Don't try to cache server-rendered HTML like /index.html explicitly.
-      return cache.addAll(PRECACHE_URLS);
-    })
+    Promise.all([
+      caches.open(SHELL_CACHE).then((cache) => cache.addAll(CRITICAL_URLS)),
+      caches.open(STATIC_CACHE).then((cache) =>
+        cache.addAll(STATIC_ASSETS).catch(() => {})
+      ),
+    ])
   );
 });
 
-// Activate: clean up old caches
-self.addEventListener('activate', event => {
+// ----------------------------------------
+//  ACTIVATE — Delete old caches for update
+// ----------------------------------------
+self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then(keys => {
-      return Promise.all(
-        keys.filter(key => key !== CACHE_NAME)
-            .map(key => caches.delete(key))
-      );
-    }).then(() => self.clients.claim())
+    caches.keys().then((keys) =>
+      Promise.all(
+        keys
+          .filter((key) => !key.includes(CACHE_VERSION))
+          .map((key) => caches.delete(key))
+      )
+    )
   );
 });
 
-// Fetch: use cache-first for same-origin GET requests, fallback to network.
-self.addEventListener('fetch', event => {
-  // Only handle GET requests for same-origin resources
-  if (event.request.method !== 'GET' || new URL(event.request.url).origin !== self.location.origin) {
-    return; // allow browser to handle
+// ----------------------------------------
+//  FETCH — smart routing (optimized)
+// ----------------------------------------
+self.addEventListener("fetch", (event) => {
+  const req = event.request;
+  const url = new URL(req.url);
+
+  // ❌ Never cache API calls or cross-origin requests
+  if (url.origin !== self.location.origin || url.pathname.includes("/api/")) {
+    event.respondWith(networkOnlyWithFallback(req));
+    return;
   }
 
-  event.respondWith(
-    caches.match(event.request).then(cached => {
-      if (cached) return cached;
-      return fetch(event.request).then(networkResponse => {
-        // Optionally cache network responses for future navigations
-        // but avoid caching opaque responses and large POST results.
-        if (networkResponse && networkResponse.status === 200) {
-          const responseClone = networkResponse.clone();
-          caches.open(CACHE_NAME).then(cache => {
-            cache.put(event.request, responseClone).catch(() => {
-              // ignore cache put failures (quota, etc.)
-            });
-          });
-        }
-        return networkResponse;
-      }).catch(() => {
-        // Network failed; return cached root if available
-        return caches.match('/').then(root => root || Promise.reject('no-cache'));
-      });
-    })
-  );
+  // ❌ Don’t cache POST/PUT/DELETE/etc.
+  if (req.method !== "GET") return;
+
+  // 📄 Navigation → Network first / Offline shell fallback
+  if (req.mode === "navigate") {
+    event.respondWith(networkFirstShellFallback(req));
+    return;
+  }
+
+  // 🖼 Static assets → Cache-first
+  if (isStaticAsset(url.pathname)) {
+    event.respondWith(cacheFirst(req, STATIC_CACHE));
+    return;
+  }
+
+  // 🔄 Everything else → Network-first + runtime cache
+  event.respondWith(networkFirstRuntimeCache(req));
 });
+
+// -----------------------------------------------------------------------------
+// ⭐ STRATEGY HELPERS
+// -----------------------------------------------------------------------------
+
+// Network-only but return shell on failure (for API)
+async function networkOnlyWithFallback(req) {
+  try {
+    return await fetch(req);
+  } catch {
+    return caches.match("/");
+  }
+}
+
+// Navigation: always try network first
+async function networkFirstShellFallback(req) {
+  try {
+    const res = await fetch(req);
+    const clone = res.clone();
+    caches.open(SHELL_CACHE).then((cache) => cache.put(req, clone));
+    return res;
+  } catch {
+    return (await caches.match(req)) || (await caches.match("/"));
+  }
+}
+
+// Static items: cache-first
+async function cacheFirst(req, cacheName) {
+  const cached = await caches.match(req);
+  if (cached) return cached;
+
+  try {
+    const res = await fetch(req);
+    caches.open(cacheName).then((cache) => cache.put(req, res.clone()));
+    return res;
+  } catch {
+    return caches.match("/");
+  }
+}
+
+// Dynamic runtime cache: network-first
+async function networkFirstRuntimeCache(req) {
+  try {
+    const res = await fetch(req);
+    caches.open(RUNTIME_CACHE).then((cache) => cache.put(req, res.clone()));
+    return res;
+  } catch {
+    return caches.match(req);
+  }
+}
+
+// Detect static file extensions
+function isStaticAsset(pathname) {
+  const extensions = [
+    ".js", ".css", ".woff", ".woff2", ".ttf",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"
+  ];
+  return extensions.some((ext) => pathname.endsWith(ext));
+}
