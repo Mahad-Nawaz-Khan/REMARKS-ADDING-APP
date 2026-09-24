@@ -3,10 +3,11 @@ import random
 import math
 import os
 import tempfile
+import aiofiles
+import aiofiles.tempfile
 from fastapi import FastAPI, File, HTTPException, UploadFile, BackgroundTasks
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-import shutil
 import uuid
 
 app = FastAPI()
@@ -20,16 +21,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ALLOWED_EXTENSIONS = {".csv", ".xlsx"}
+CSV_EXTENSION = ".csv"
+XLSX_EXTENSION = ".xlsx"
+ALLOWED_EXTENSIONS = {CSV_EXTENSION, XLSX_EXTENSION}
 # Store processed files with unique IDs
 PROCESSED_FILES = {}
 
 def add_remarks_to_file(file_path, file_id, original_filename):
     """Adds remarks to the uploaded file and saves the modified version."""
     try:
-        if file_path.endswith(".xlsx"):
+        if file_path.endswith(XLSX_EXTENSION):
             df = pd.read_excel(file_path)
-        elif file_path.endswith(".csv"):
+        elif file_path.endswith(CSV_EXTENSION):
             df = pd.read_csv(file_path)
         else:
             PROCESSED_FILES[file_id] = {"status": "error", "message": "Unsupported file format"}
@@ -62,7 +65,7 @@ def add_remarks_to_file(file_path, file_id, original_filename):
         clean_filename = f"{base_name}_modified{ext}"
         new_file_path = os.path.join(tempfile.gettempdir(), clean_filename)
         
-        if file_path.endswith(".xlsx"):
+        if file_path.endswith(XLSX_EXTENSION):
             df.to_excel(new_file_path, index=False)
         else:
             df.to_csv(new_file_path, index=False)
@@ -94,10 +97,11 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
     # Generate a unique ID for this file processing task
     file_id = str(uuid.uuid4())
     
-    # Store the file
-    with tempfile.NamedTemporaryFile(delete=False, suffix=filename) as temp_file:
+    # Store the file asynchronously
+    async with aiofiles.tempfile.NamedTemporaryFile(delete=False, suffix=filename) as temp_file:
         file_path = temp_file.name
-        shutil.copyfileobj(file.file, temp_file)
+        while chunk := await file.read(1024 * 1024):
+            await temp_file.write(chunk)
 
     # Process the file in the background
     PROCESSED_FILES[file_id] = {"status": "processing"}
@@ -124,6 +128,11 @@ async def check_status(file_id: str):
     else:
         return {"status": "processing", "message": "File is still being processed"}
 
+def cleanup_temp_file(path: str) -> None:
+    """Safely remove temporary file after download."""
+    if os.path.exists(path):
+        os.remove(path)
+
 @app.get("/download/{file_id}")
 async def download_file(file_id: str):
     """Allows the user to download the processed file."""
@@ -137,13 +146,14 @@ async def download_file(file_id: str):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
 
+    tasks = BackgroundTasks()
+    tasks.add_task(cleanup_temp_file, file_path)
+
     # Return the file as a download
     return FileResponse(
         file_path, 
         filename=filename,
-        background=BackgroundTasks().add_task(
-            lambda: os.remove(file_path) if os.path.exists(file_path) else None
-        )
+        background=tasks
     )
 
 # Run the server

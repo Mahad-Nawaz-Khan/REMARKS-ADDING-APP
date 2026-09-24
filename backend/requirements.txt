@@ -3,4 +3,4 @@ uvicorn
 pandas
 python-multipart
 openpyxl
-
+aiofiles

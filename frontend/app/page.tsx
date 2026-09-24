@@ -93,6 +93,91 @@ useEffect(() => {
     }
   };
 
+  interface PollResult {
+    message: string;
+    downloadUrl: string;
+  }
+
+  const formatUploadErrorMessage = (error: unknown): string => {
+    if (axios.isAxiosError(error) && error.code === "ECONNABORTED") {
+      return "Upload timed out. The file might be too large or the server is busy. Please try again.";
+    }
+    if (axios.isAxiosError(error) && error.response?.data?.message) {
+      return String(error.response.data.message);
+    }
+    if (error instanceof Error) {
+      return error.message;
+    }
+    return "Error uploading file. Please try again.";
+  };
+
+  const uploadFileToServer = async (
+    fileToUpload: File,
+    targetUrl: string,
+    onProgress: (percent: number) => void
+  ): Promise<string> => {
+    const formData = new FormData();
+    formData.append("file", fileToUpload);
+
+    const uploadResponse = await axios.post(`${targetUrl}/upload`, formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 120000,
+      onUploadProgress: (progressEvent) => {
+        const percentCompleted = Math.round(
+          (progressEvent.loaded * 100) / (progressEvent.total || 100)
+        );
+        onProgress(Math.min(50, percentCompleted));
+      },
+    });
+
+    if (!uploadResponse.data?.file_id) {
+      throw new Error("No file ID received from server");
+    }
+
+    return uploadResponse.data.file_id;
+  };
+
+  const pollFileStatus = async (
+    fileId: string,
+    targetUrl: string,
+    onProgress: (percent: number) => void
+  ): Promise<PollResult> => {
+    const maxAttempts = 60;
+
+    for (let attempts = 1; attempts <= maxAttempts; attempts++) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      try {
+        const statusResponse = await axios.get(`${targetUrl}/status/${fileId}`);
+        const { status, message: statusMsg, download_url: rawDownloadUrl } = statusResponse.data;
+
+        if (status === "processing") {
+          onProgress(50 + Math.min(40, attempts * 2));
+          continue;
+        }
+
+        if (status === "completed") {
+          onProgress(100);
+          return {
+            message: statusMsg || "File processed successfully!",
+            downloadUrl: rawDownloadUrl ? `${targetUrl}${rawDownloadUrl}` : "",
+          };
+        }
+
+        if (status === "error") {
+          throw new Error(statusMsg || "Error processing file");
+        }
+      } catch (statusError) {
+        if (statusError instanceof Error && statusError.message.includes("Error processing file")) {
+          throw statusError;
+        }
+        console.error("Error checking status:", statusError);
+      }
+    }
+
+    throw new Error("Processing timed out. The file might be too large.");
+  };
+
   const handleUpload = async () => {
     if (!file) {
       setMessage("Please select a file first.");
@@ -102,97 +187,27 @@ useEffect(() => {
     setIsUploading(true);
     setUploadProgress(0);
     setMessage("Uploading file...");
-    // Keep the file state during upload
     const currentFile = file;
     const currentFileName = fileName;
 
-    const formData = new FormData();
-    formData.append("file", file);
-
     try {
-      // Step 1: Upload the file and get the file_id
-      const uploadResponse = await axios.post(`${backendUrl}/upload`, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-        timeout: 120000, // 2 minutes timeout
-        onUploadProgress: (progressEvent) => {
-          const percentCompleted = Math.round(
-            (progressEvent.loaded * 100) / (progressEvent.total || 100)
-          );
-          // Cap at 50% since processing happens after upload
-          setUploadProgress(Math.min(50, percentCompleted));
-        }
-      });
-      
-      if (!uploadResponse.data.file_id) {
-        throw new Error("No file ID received from server");
-      }
-      
-      const fileId = uploadResponse.data.file_id;
+      const fileId = await uploadFileToServer(file, backendUrl, setUploadProgress);
       setMessage("File uploaded. Processing...");
-      
-      // Step 2: Poll for status until processing is complete
-      let processingComplete = false;
-      let attempts = 0;
-      const maxAttempts = 60; // Try for up to 60 seconds (12 attempts, 5 seconds each)
-      
-      while (!processingComplete && attempts < maxAttempts) {
-        attempts++;
-        
-        try {
-          // Wait 2 seconds between status checks
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          
-          const statusResponse = await axios.get(`${backendUrl}/status/${fileId}`);
-          const status = statusResponse.data.status;
-          
-          // Update progress based on status
-          if (status === "processing") {
-            // Gradually increase progress from 50% to 90% during processing
-            const processingProgress = 50 + Math.min(40, attempts * 2);
-            setUploadProgress(processingProgress);
-          } else if (status === "completed") {
-            setUploadProgress(100);
-            setMessage(statusResponse.data.message || "File processed successfully!");
-            setShowSuccess(true);
-            
-            if (statusResponse.data.download_url) {
-              const fullDownloadUrl = `${backendUrl}${statusResponse.data.download_url}`;
-              setDownloadUrl(fullDownloadUrl);
-              console.log("Download URL set:", fullDownloadUrl);
-            }
-            
-            processingComplete = true;
-          } else if (status === "error") {
-            throw new Error(statusResponse.data.message || "Error processing file");
-          }
-        } catch (statusError) {
-          console.error("Error checking status:", statusError);
-          // Continue polling even if a status check fails
-        }
+
+      const result = await pollFileStatus(fileId, backendUrl, setUploadProgress);
+      setMessage(result.message);
+      if (result.downloadUrl) {
+        setDownloadUrl(result.downloadUrl);
+        console.log("Download URL set:", result.downloadUrl);
       }
-      
-      if (!processingComplete) {
-        throw new Error("Processing timed out. The file might be too large.");
-      }
-      
-      // Ensure we still have the file information after the process completes
-      setFile(currentFile);
-      setFileName(currentFileName);
-    } catch (error: any) {
+      setShowSuccess(true);
+    } catch (error) {
       console.error("Upload error:", error);
-      
-      // Provide more specific error messages
-      if (error.code === 'ECONNABORTED') {
-        setMessage("Upload timed out. The file might be too large or the server is busy. Please try again.");
-      } else {
-        setMessage(error.message || error.response?.data?.message || "Error uploading file. Please try again.");
-      }
-      
+      setMessage(formatUploadErrorMessage(error));
       setShowSuccess(false);
-      // Keep the file information even if there's an error
+    } finally {
       setFile(currentFile);
       setFileName(currentFileName);
-    } finally {
       setIsUploading(false);
     }
   };
